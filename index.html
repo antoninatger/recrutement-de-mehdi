@@ -328,21 +328,36 @@ button{font-family:inherit;cursor:pointer}
 // (Settings > API dans le dashboard)
 const SUPABASE_URL = 'https://itfwepbhfbtodjkttkxf.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_fhNdwRE5atqIpqczpHxTHw_6SyRnxTq';
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+let sb = null;
+let SB_OFFLINE = false;
+try {
+  if (typeof supabase !== 'undefined' && supabase && typeof supabase.createClient === 'function') {
+    sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  } else {
+    SB_OFFLINE = true;
+    console.warn('Supabase library indisponible, mode hors-ligne.');
+  }
+} catch (e) {
+  SB_OFFLINE = true;
+  console.error('Supabase init failed:', e);
+}
 
 const KGS = 'game_state';
 
 async function getGS(){
+  if(!sb) return {step:0,voting:false,results:false,biais:false};
   const {data}=await sb.from('game_kv').select('value').eq('key',KGS).maybeSingle();
   return data?data.value:{step:0,voting:false,results:false,biais:false};
 }
-async function setGS(gs){await sb.from('game_kv').upsert({key:KGS,value:gs})}
+async function setGS(gs){if(!sb) return; await sb.from('game_kv').upsert({key:KGS,value:gs})}
 async function getVotes(n){
+  if(!sb) return [];
   const {data}=await sb.from('votes').select('team,value').eq('step',n);
   return data?data.map(r=>({t:r.team,v:r.value})):[];
 }
-async function addVote(n,team,val){await sb.from('votes').insert({step:n,team,value:val})}
+async function addVote(n,team,val){if(!sb) return; await sb.from('votes').insert({step:n,team,value:val})}
 async function resetAll(){
+  if(!sb) return;
   await sb.from('game_kv').upsert({key:KGS,value:{step:0,voting:false,results:false,biais:false}});
   await sb.from('votes').delete().gte('step',0);
 }
@@ -403,6 +418,7 @@ function render(){
 function vWelcome(){return`
 <div class="screen">
   <div class="welcome-box">
+    ${SB_OFFLINE ? `<div role="alert" style="margin-bottom:16px;padding:10px 14px;border-radius:10px;background:#3a1414;color:#ffb4b4;font-size:.85rem;">⚠️ Connexion à la base de données indisponible. Vérifiez votre connexion internet et rechargez la page.</div>` : ''}
     <div class="game-eyebrow">Jeu pédagogique · Média &amp; recrutement</div>
     <h1 class="game-title">Le Recrutement</h1>
     <p class="game-desc">Rejoignez la session pour participer</p>
@@ -517,8 +533,8 @@ function vAdmin(){
   const vR=votes.filter(v=>v.t==='r');
   const avgC=vC.length?(vC.reduce((s,v)=>s+v.v,0)/vC.length).toFixed(1):'—';
   const avgR=vR.length?(vR.reduce((s,v)=>s+v.v,0)/vR.length).toFixed(1):'—';
-  const dC=[1,2,3,4,5].map(n=>vC.filter(v=>v.v===n).length);
-  const dR=[1,2,3,4,5].map(n=>vR.filter(v=>v.v===n).length);
+  const dC=[1,2,3,4,5].map(n=>vC.filter(v=>Math.round(v.v)===n).length);
+  const dR=[1,2,3,4,5].map(n=>vR.filter(v=>Math.round(v.v)===n).length);
   const mx=Math.max(1,...dC,...dR);
   const dots=STEPS.map((_,i)=>`<div class="pdot${i<gs.step?' pdot-done':i===gs.step?' pdot-cur':''}"></div>`).join('');
   const barC=dC.map((n,i)=>`<div class="res-bar-wrap"><div class="res-bar bar-c" style="height:${Math.round(n/mx*56)+4}px"></div><div class="res-bar-lbl">${i+1}</div><div class="res-bar-n">${n}</div></div>`).join('');

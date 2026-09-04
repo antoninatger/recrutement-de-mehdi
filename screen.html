@@ -679,8 +679,8 @@ function vResults(step){
   const vR = S.votes.filter(v=>v.t==='r');
   const avgC = vC.length ? (vC.reduce((s,v)=>s+v.v,0)/vC.length) : null;
   const avgR = vR.length ? (vR.reduce((s,v)=>s+v.v,0)/vR.length) : null;
-  const dC = [1,2,3,4,5].map(n=>vC.filter(v=>v.v===n).length);
-  const dR = [1,2,3,4,5].map(n=>vR.filter(v=>v.v===n).length);
+  const dC = [1,2,3,4,5].map(n=>vC.filter(v=>Math.round(v.v)===n).length);
+  const dR = [1,2,3,4,5].map(n=>vR.filter(v=>Math.round(v.v)===n).length);
   const mx = Math.max(1, ...dC, ...dR);
 
   const barC = dC.map((n,i)=>`

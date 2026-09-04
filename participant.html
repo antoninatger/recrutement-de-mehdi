@@ -448,9 +448,13 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     }
   }
   async function addVote(n, team, val){
-    if(!sb) return;
-    try { await sb.from('votes').insert({ step:n, team, value:val }); }
-    catch(e){ console.error('addVote failed', e); }
+    if(!sb) return false;
+    try {
+      // supabase-js ne rejette pas sur une erreur serveur : elle revient dans { error }.
+      const { error } = await sb.from('votes').insert({ step:n, team, value:val });
+      if (error) { console.error('addVote failed', error); return false; }
+      return true;
+    } catch(e){ console.error('addVote failed', e); return false; }
   }
 
   // ── POLL ──
@@ -604,6 +608,8 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
 
   <div class="s-doc-hint">Document projeté à l'écran</div>
 
+  ${S.voteError ? `<div role="alert" style="margin:12px 0;padding:10px 14px;border-radius:10px;background:#3a1414;color:#ffb4b4;font-size:.9rem;">⚠️ Échec de l'envoi de la réponse. Vérifiez votre connexion et réessayez.</div>` : ''}
+
   <div class="answer-card">
     <div class="answer-value ${hasVal?'is-set':''}" id="val-display">${display}</div>
     <div class="answer-status" id="val-status">${status}</div>
@@ -626,7 +632,7 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     </div>
   </div>
 
-  <button class="validate${hasVal?' is-visible':''}" id="validate-btn" data-action="validate">Valider la réponse</button>
+  <button class="validate${hasVal?' is-visible':''}" id="validate-btn" data-action="validate" ${S.voteSending?'disabled':''}>${S.voteSending ? 'Envoi…' : 'Valider la réponse'}</button>
 </div>`;
   }
 
@@ -759,12 +765,23 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     const value = S.selected;
     const isLast = step >= STEPS.length - 1;
 
+    S.voteError = false;
+    S.voteSending = true;
+    render();
+
+    const ok = await addVote(step, S.role, value);
+    S.voteSending = false;
+
+    if(!ok){
+      S.voteError = true;
+      render();
+      return;
+    }
+
     S.voted[step] = true;
     S.selected = null;
     S.view = 'voted';
     render();
-
-    await addVote(step, S.role, value);
 
     setTimeout(() => {
       if(S.view === 'voted'){
