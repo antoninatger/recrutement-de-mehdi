@@ -81,6 +81,28 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
 }
 .w-banner.is-on{display:block}
 
+/* Le lien vers le document de l'acte : c'est une cible tactile, elle fait
+   44 px comme les autres. */
+.s-doc-lien{
+  display:flex; align-items:center; justify-content:center; gap:8px;
+  min-height:44px; padding:0 14px; margin:10px 0;
+  border:1px solid rgba(255,255,255,.22); border-radius:10px;
+  color:inherit; text-decoration:none;
+}
+.s-doc-lien:hover{ border-color:rgba(255,255,255,.45); }
+
+/* Bandeau « connexion perdue ». Il n'apparaît qu'après DEUX synchronisations
+   ratées d'affilée : sur un réseau de salle, un tic qui échoue est banal, et
+   un bandeau qui clignote inquiète pour rien. */
+.lien-perdu{
+  position:fixed; left:0; right:0; top:0; z-index:9999;
+  padding:10px 16px; text-align:center;
+  background:#4a2200; color:#ffd9a8;
+  border-bottom:1px solid #7a3c00;
+  font-size:.85rem; line-height:1.45;
+}
+.lien-perdu[hidden]{display:none}
+
 /* ── ÉCRAN RÉVÉLATION DU RÔLE ── */
 .rr-wrap{flex:1;display:flex;flex-direction:column;justify-content:center;text-align:center;padding:24px 0}
 .rr-eyebrow{font-size:.7rem;letter-spacing:0.28em;text-transform:uppercase;color:var(--dim);margin-bottom:18px}
@@ -393,6 +415,11 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
 </style>
 </head>
 <body>
+<!-- Hors de #root : ce conteneur est réécrit en entier à chaque rendu, un
+     bandeau posé dedans disparaîtrait au premier changement d'écran. -->
+<div class="lien-perdu" id="lien-perdu" role="status" aria-live="polite" hidden>
+  ⚠️ Connexion à la session perdue. Votre rôle et vos réponses sont conservés ; l'écran se remettra à jour tout seul.
+</div>
 <div id="root">
   <div class="loading"><div class="loading-dot"></div>Chargement...</div>
 </div>
@@ -417,6 +444,34 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
   let pollTmr = null;
   let sb = null;
 
+  /* ── Mémoire de session ────────────────────────────────────────────────
+     Un téléphone qui se recharge en plein acte — écran verrouillé, onglet
+     recyclé par le système, doigt malheureux — repartait de zéro : nouveau
+     tirage de rôle, donc la moitié de la salle changeait de camp au milieu
+     de l'histoire, et les votes déjà envoyés étaient reproposés.
+
+     sessionStorage et non localStorage : la mémoire doit durer le temps de
+     l'onglet, pas au-delà. Deux sessions successives dans la même salle
+     doivent bien retirer un rôle au hasard. */
+  const CLE_SESSION = 'mehdi.participant.v1';
+
+  function memoriser(){
+    try{
+      sessionStorage.setItem(CLE_SESSION, JSON.stringify({
+        role: S.role, voted: S.voted, view: S.view
+      }));
+    }catch(e){ /* navigation privée ou stockage plein : on continue sans */ }
+  }
+
+  function relire(){
+    try{
+      const brut = sessionStorage.getItem(CLE_SESSION);
+      if(!brut) return null;
+      const o = JSON.parse(brut);
+      return (o && (o.role === 'c' || o.role === 'r')) ? o : null;
+    }catch(e){ return null; }
+  }
+
   // ── INIT SUPABASE (résilient) ──
   const SUPABASE_URL = 'https://itfwepbhfbtodjkttkxf.supabase.co';
   const SUPABASE_KEY = 'sb_publishable_fhNdwRE5atqIpqczpHxTHw_6SyRnxTq';
@@ -437,15 +492,30 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
   const KGS = 'game_state';
   const DEFAULT_GS = { step:0, voting:false, results:false, biais:false };
 
+  /* getGS renvoie null quand la synchronisation ÉCHOUE, et un état par
+     défaut quand elle réussit mais que la partie n'a pas encore commencé.
+     Les deux cas étaient confondus : impossible de dire « connexion perdue »
+     puisqu'un échec ressemblait à une session pas démarrée. */
   async function getGS(){
     if(!sb) return { ...DEFAULT_GS };
     try {
-      const { data } = await sb.from('game_kv').select('value').eq('key', KGS).maybeSingle();
+      const { data, error } = await sb.from('game_kv').select('value').eq('key', KGS).maybeSingle();
+      if(error) { console.warn('getGS error', error); return null; }
       return data ? data.value : { ...DEFAULT_GS };
     } catch(e){
       console.warn('getGS error', e);
-      return { ...DEFAULT_GS };
+      return null;
     }
+  }
+
+  /* Deux tics ratés d'affilée : on le dit. Un seul, non — sur le réseau
+     d'une salle, un tic qui passe à la trappe n'a rien d'anormal. */
+  let ticsRates = 0;
+  const SEUIL_PERTE = 2;
+
+  function signalerLien(perdu){
+    const b = document.getElementById('lien-perdu');
+    if(b) b.hidden = !perdu;
   }
   async function addVote(n, team, val){
     if(!sb) return false;
@@ -464,6 +534,13 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
   async function tick(){
     if(!sb) return;
     const gs = await getGS();
+    if(gs === null){
+      ticsRates++;
+      if(ticsRates >= SEUIL_PERTE) signalerLien(true);
+      return;                       // on garde l'écran tel qu'il est
+    }
+    ticsRates = 0;
+    signalerLien(false);
     const prevStep = S.gs ? S.gs.step : -1;
     const prevVoting = S.gs ? S.gs.voting : false;
     const oldGS = S.gs;
@@ -589,7 +666,7 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
 
     const hasVal = S.selected !== null && S.selected !== undefined;
     const initial = hasVal ? S.selected : 3;
-    const display = hasVal ? S.selected.toFixed(1) : '—';
+    const display = hasVal ? String(S.selected) : '—';
     const status = hasVal ? 'Réponse sélectionnée' : 'Faites glisser pour répondre';
 
     return `
@@ -606,7 +683,11 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
 
   <div class="s-ctx"><p>${ctx}</p></div>
 
-  <div class="s-doc-hint">Document projeté à l'écran</div>
+  <!-- Le document est projeté, mais depuis le fond de la salle on ne lit
+       ni un CV ni un fil Slack. Le lien l'ouvre sur le téléphone. -->
+  <a class="s-doc-hint s-doc-lien" href="${DOC_PATHS[gs.step]}" target="_blank" rel="noopener">
+    📄 Voir le document sur mon téléphone
+  </a>
 
   ${S.voteError ? `<div role="alert" style="margin:12px 0;padding:10px 14px;border-radius:10px;background:#3a1414;color:#ffb4b4;font-size:.9rem;">⚠️ Échec de l'envoi de la réponse. Vérifiez votre connexion et réessayez.</div>` : ''}
 
@@ -620,7 +701,11 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     </div>
 
     <div class="slider-wrap">
-      <input class="slider" type="range" min="1" max="5" step="0.1" value="${initial}" data-slider aria-label="Choisissez une valeur entre 1 et 5">
+      <!-- pas de 1, pas de 0,1 : une échelle de Likert a cinq positions et
+           un « 3,4 » ne veut rien dire de plus qu'un « 3 ». Le pas au dixième
+           produisait en outre des valeurs qui ne tombaient dans aucune barre
+           de l'histogramme projeté. -->
+      <input class="slider" type="range" min="1" max="5" step="1" value="${initial}" data-slider aria-label="Choisissez une valeur entre 1 et 5">
     </div>
 
     <div class="slider-ticks">
@@ -705,12 +790,13 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     S.view = 'loading';
     render();
     if(sb){
-      try { S.gs = await getGS(); } catch(e){ S.gs = { ...DEFAULT_GS }; }
+      try { S.gs = await getGS() || { ...DEFAULT_GS }; } catch(e){ S.gs = { ...DEFAULT_GS }; }
     } else {
       S.gs = { ...DEFAULT_GS };
     }
     S.role = Math.random() < 0.5 ? 'c' : 'r';
     S.view = 'reveal';
+    memoriser();
     render();
   }
 
@@ -718,12 +804,32 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     const gs = S.gs || DEFAULT_GS;
     S.view = (gs.voting && !S.voted[gs.step]) ? 'stage' : 'wait';
     if(sb) startPoll();
+    memoriser();
+    render();
+  }
+
+  /* Reprise après rechargement : on retrouve son rôle et ses votes, et on
+     rentre directement dans l'histoire — pas d'écran « Vous incarnez » qui
+     annoncerait à nouveau un rôle qu'on connaît déjà. */
+  async function reprendre(o){
+    S.role = o.role;
+    S.voted = o.voted || {};
+    S.view = 'loading';
+    render();
+    if(sb){
+      try { S.gs = await getGS() || { ...DEFAULT_GS }; } catch(e){ S.gs = { ...DEFAULT_GS }; }
+    } else {
+      S.gs = { ...DEFAULT_GS };
+    }
+    const gs = S.gs;
+    if(o.view === 'end'){ S.view = 'end'; }
+    else { S.view = (gs.voting && !S.voted[gs.step]) ? 'stage' : 'wait'; if(sb) startPoll(); }
     render();
   }
 
   // ── SLIDER : mouvement ──
   function onSliderInput(input){
-    const v = Math.round(parseFloat(input.value) * 10) / 10;
+    const v = Math.round(parseFloat(input.value));
     const pct = ((v - 1) / 4) * 100;
     input.style.setProperty('--pct', pct + '%');
 
@@ -732,7 +838,7 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     const display = document.getElementById('val-display');
     const status = document.getElementById('val-status');
     if(display){
-      display.textContent = v.toFixed(1);
+      display.textContent = String(v);
       display.classList.add('is-set');
     }
     if(status){ status.textContent = 'Réponse sélectionnée'; }
@@ -781,12 +887,14 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     S.voted[step] = true;
     S.selected = null;
     S.view = 'voted';
+    memoriser();
     render();
 
     setTimeout(() => {
       if(S.view === 'voted'){
         S.view = isLast ? 'end' : 'wait';
         if(isLast){ stopPoll(); }
+        memoriser();
         render();
       }
     }, 900);
@@ -806,7 +914,9 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
   });
 
   // ── BOOT ──
-  render();
+  const reprise = relire();
+  if(reprise) reprendre(reprise);
+  else render();
 })();
 </script>
 </body>

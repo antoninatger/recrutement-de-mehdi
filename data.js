@@ -2,10 +2,21 @@
 
 // ══════════════════════════════════════════════════
 //  CONFIGURATION
-//  Modifiez ici les codes d'accès à la session.
+//
+//  LE CODE ANIMATEUR N'EST PLUS ICI.
+//
+//  Il y était en clair — `const ADMIN_CODE = '…'` — dans un fichier servi
+//  publiquement : n'importe quel participant qui ouvrait la source de la
+//  page pouvait ouvrir la console d'animation, changer d'acte, ou vider
+//  les votes en pleine séance. Un code écrit côté client ne protège rien.
+//
+//  Il vit maintenant dans une table privée de Supabase et n'est comparé
+//  que par la base, à travers trois fonctions `security definer` :
+//  admin_set_state, admin_reset et admin_feedback. Le code voyage, il ne
+//  se stocke pas ; aucun fichier de ce dépôt ne le contient.
+//
+//  Marche à suivre pour l'installer : SECURITE-SUPABASE.sql, en tête.
 // ══════════════════════════════════════════════════
-
-const ADMIN_CODE = 'mehdi2024'; // code animateur
 
 
 // ══════════════════════════════════════════════════

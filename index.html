@@ -314,6 +314,14 @@ button{font-family:inherit;cursor:pointer}
 .intro-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--rad);padding:20px 22px;margin-bottom:24px}
 .intro-card p{font-size:.9rem;color:var(--text);line-height:1.75;margin-bottom:14px}
 .intro-card p:last-child{margin-bottom:0}
+/* Bandeau de la console animateur tant que les fonctions SQL ne sont pas
+   posees : sans lui, on croirait la console protegee alors qu'elle ne
+   l'est pas encore. Voir SECURITE-SUPABASE.sql. */
+.sb-alerte{
+  margin:0 0 14px; padding:11px 13px; border-radius:10px;
+  background:#4a2200; color:#ffd9a8; border:1px solid #7a3c00;
+  font-size:.78rem; line-height:1.5;
+}
 </style>
 </head>
 <body>
@@ -349,7 +357,35 @@ async function getGS(){
   const {data}=await sb.from('game_kv').select('value').eq('key',KGS).maybeSingle();
   return data?data.value:{step:0,voting:false,results:false,biais:false};
 }
-async function setGS(gs){if(!sb) return; await sb.from('game_kv').upsert({key:KGS,value:gs})}
+/* ── Écritures privilégiées ───────────────────────────────────────────────
+   Toute écriture de l'animateur passe par une fonction `security definer`
+   qui compare le code reçu à une table privée. Le code n'est jamais
+   enregistré : il est saisi à l'ouverture de la console et vit en mémoire
+   le temps de la séance.
+
+   REPLI, à retirer quand le SQL sera posé : tant que les fonctions
+   n'existent pas côté base, on retombe sur l'écriture directe d'aujourd'hui
+   — sinon la séance ne pourrait plus être animée du tout entre le moment
+   où ce code est publié et celui où Antonin colle le SQL. La console
+   affiche alors un bandeau qui dit qu'elle n'est pas protégée. */
+let ADMIN_CODE_SAISI = null;    // en mémoire seulement, jamais stocké
+let SQL_ABSENT = false;         // vrai si les fonctions ne sont pas posées
+
+function fonctionAbsente(error){
+  const m = ((error && error.message) || '') + ' ' + ((error && error.code) || '');
+  return /(does not exist|Could not find the function|PGRST202|42883)/i.test(m);
+}
+
+async function setGS(gs){
+  if(!sb) return;
+  if(!SQL_ABSENT){
+    const { error } = await sb.rpc('admin_set_state', { code: ADMIN_CODE_SAISI, new_value: gs });
+    if(!error) return;
+    if(!fonctionAbsente(error)){ console.error('admin_set_state refusé', error); return; }
+    SQL_ABSENT = true;          // repli, une seule fois
+  }
+  await sb.from('game_kv').upsert({key:KGS,value:gs});
+}
 async function getVotes(n){
   if(!sb) return [];
   const {data}=await sb.from('votes').select('team,value').eq('step',n);
@@ -358,6 +394,12 @@ async function getVotes(n){
 async function addVote(n,team,val){if(!sb) return; await sb.from('votes').insert({step:n,team,value:val})}
 async function resetAll(){
   if(!sb) return;
+  if(!SQL_ABSENT){
+    const { error } = await sb.rpc('admin_reset', { code: ADMIN_CODE_SAISI });
+    if(!error) return;
+    if(!fonctionAbsente(error)){ console.error('admin_reset refusé', error); return; }
+    SQL_ABSENT = true;
+  }
   await sb.from('game_kv').upsert({key:KGS,value:{step:0,voting:false,results:false,biais:false}});
   await sb.from('votes').delete().gte('step',0);
 }
@@ -446,7 +488,7 @@ function vAuth(){return`
     <h2>Espace animateur</h2>
     <p class="auth-sub">Entrez le code d'accès pour contrôler la session.</p>
     <input class="code-input" id="ci" type="password" placeholder="Code animateur" autocomplete="off">
-    ${S.authErr?'<p class="err">Code incorrect.</p>':''}
+    ${S.authErr?`<p class="err">${S.authErr === true ? 'Code incorrect.' : S.authErr}</p>`:''}
     <button class="btn-primary" onclick="tryAuth()">Accéder →</button>
   </div>
 </div>`}
@@ -469,7 +511,7 @@ function vVote(){
   const q=S.role==='c'?(step.qC||step.q):(step.qR||step.q);
   const hasVal = S.sel !== null && S.sel !== undefined && S.sel !== false;
   const initial = hasVal ? S.sel : 3;
-  const display = hasVal ? (typeof S.sel==='number'?S.sel.toFixed(1):S.sel) : '—';
+  const display = hasVal ? String(S.sel) : '—';
   const status = hasVal ? 'Réponse sélectionnée' : 'Faites glisser pour répondre';
   return`
 <div class="screen part-screen">
@@ -488,7 +530,9 @@ function vVote(){
           <div class="slider-bound is-max">${step.max}</div>
         </div>
         <div class="slider-wrap">
-          <input class="slider" type="range" min="1" max="5" step="0.1" value="${initial}" data-slider aria-label="Choisissez une valeur entre 1 et 5">
+          <!-- pas de 1 : cinq positions, pas de « 3,4 » qui ne tombe dans
+               aucune barre de l'histogramme projeté. -->
+          <input class="slider" type="range" min="1" max="5" step="1" value="${initial}" data-slider aria-label="Choisissez une valeur entre 1 et 5">
         </div>
         <div class="slider-ticks">
           <div class="slider-tick" style="left:0%"><div class="slider-tick-dot"></div><span class="slider-tick-num">1</span></div>
@@ -548,6 +592,7 @@ ${S.proj?`<button class="proj-toggle-btn" onclick="toggleProj()">↙ Quitter</bu
   </div>
   <div class="admin-sidebar">
     <div class="sidebar-inner">
+      ${SQL_ABSENT ? `<div class="sb-alerte" role="status">⚠️ Console non protégee cote serveur : les regles Supabase ne sont pas encore appliquees. Collez SECURITE-SUPABASE.sql dans la console SQL du projet, puis rechargez cette page.</div>` : ''}
       <div class="sb-section">
         <div class="sb-label">Navigation</div>
         <div class="progress-row">${dots}</div>
@@ -692,7 +737,7 @@ function vRolePreview(){
           <div class="slider-bound is-max">${step.max}</div>
         </div>
         <div class="slider-wrap">
-          <input class="slider" type="range" min="1" max="5" step="0.1" value="3" disabled style="--pct:50%">
+          <input class="slider" type="range" min="1" max="5" step="1" value="3" disabled style="--pct:50%">
         </div>
         <div class="slider-ticks">
           <div class="slider-tick" style="left:0%"><div class="slider-tick-dot"></div><span class="slider-tick-num">1</span></div>
@@ -722,12 +767,26 @@ async function chooseRole(role){
   render();
 }
 
+/* Le code n'est comparé à rien ici : on tente une écriture privilégiée
+   inoffensive — réécrire l'état courant à l'identique — et c'est la base qui
+   accepte ou refuse. Rien à comparer côté client, donc rien à voler dans la
+   source de la page. */
 async function tryAuth(){
-  const val=document.getElementById('ci')?.value||'';
-  if(val.trim()===ADMIN_CODE){
-    S.gs=await getGS();S.votes=await getVotes(S.gs.step);
-    S.view='admin';S.authErr=false;startPoll();render();
-  } else {S.authErr=true;render()}
+  const val=(document.getElementById('ci')?.value||'').trim();
+  if(!val){S.authErr=true;render();return;}
+  /* Sans base, la console ne pourrait rien piloter de toute facon : on le
+     dit clairement plutot que de laisser croire a un code refuse. */
+  if(!sb){S.authErr="Pas de connexion a la base : la console d'animation ne peut pas fonctionner. Verifiez le reseau et rechargez.";render();return;}
+
+  const gs = await getGS();
+  const { error } = await sb.rpc('admin_set_state', { code: val, new_value: gs });
+
+  if(error && !fonctionAbsente(error)){ S.authErr=true; render(); return; }
+  if(error) SQL_ABSENT = true;   // fonctions pas encore posées : voir le bandeau
+
+  ADMIN_CODE_SAISI = val;
+  S.gs=gs;S.votes=await getVotes(gs.step);
+  S.view='admin';S.authErr=false;startPoll();render();
 }
 
 // Conservé pour compat éventuelle (clic ancien). Plus utilisé en vue Vote.
@@ -737,13 +796,13 @@ function selL(n){S.sel=n;render()}
 // le bouton "Valider" 500ms après l'arrêt du mouvement.
 let _validateTimer=null;
 function onSliderInput(input){
-  const v=Math.round(parseFloat(input.value)*10)/10;
+  const v=Math.round(parseFloat(input.value));
   const pct=((v-1)/4)*100;
   input.style.setProperty('--pct', pct+'%');
   S.sel=v;
   const display=document.getElementById('val-display');
   const status=document.getElementById('val-status');
-  if(display){display.textContent=v.toFixed(1);display.classList.add('is-set');}
+  if(display){display.textContent=String(v);display.classList.add('is-set');}
   if(status){status.textContent='Réponse sélectionnée';}
   const btn=document.getElementById('validate-btn');
   if(btn) btn.classList.remove('is-visible');

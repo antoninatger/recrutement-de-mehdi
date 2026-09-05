@@ -476,9 +476,24 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{animation-duration:0.01ms!important;transition-duration:0.01ms!important}
 }
+/* Bandeau « connexion perdue ». Il n'apparaît qu'après DEUX synchronisations
+   ratées d'affilée : un tic qui échoue sur le réseau d'une salle est banal.
+   Projeté, il doit se lire du fond de la salle. */
+.lien-perdu{
+  position:fixed; left:0; right:0; top:0; z-index:9999;
+  padding:14px 20px; text-align:center;
+  background:#4a2200; color:#ffd9a8;
+  border-bottom:2px solid #7a3c00;
+  font-size:1.15rem; line-height:1.4;
+}
+.lien-perdu[hidden]{display:none}
 </style>
 </head>
 <body>
+<!-- Hors de #root, réécrit à chaque rendu. -->
+<div class="lien-perdu" id="lien-perdu" role="status" aria-live="polite" hidden>
+  ⚠️ Connexion à la session perdue. L'écran garde le dernier état connu.
+</div>
 <div id="root"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -503,30 +518,64 @@ try {
   console.error('Supabase init failed:', e);
 }
 
+/* null = la synchronisation a échoué ; un objet = elle a réussi. Les deux
+   cas étaient confondus, et l'écran de projection retombait silencieusement
+   sur l'état par défaut — la salle voyait la séance revenir à l'acte 1. */
 async function getGS(){
   if(!sb) return { ...DEFAULT_GS };
   try {
-    const { data } = await sb.from('game_kv').select('value').eq('key', KGS).maybeSingle();
+    const { data, error } = await sb.from('game_kv').select('value').eq('key', KGS).maybeSingle();
+    if(error){ console.warn('getGS error', error); return null; }
     return data ? data.value : { ...DEFAULT_GS };
   } catch(e) {
     console.warn('getGS error', e);
-    return { ...DEFAULT_GS };
+    return null;
   }
 }
 async function getVotes(n){
   if(!sb) return [];
   try {
-    const { data } = await sb.from('votes').select('team,value').eq('step', n);
+    const { data, error } = await sb.from('votes').select('team,value').eq('step', n);
+    if(error){ console.warn('getVotes error', error); return null; }
     return data ? data.map(r => ({ t:r.team, v:r.value })) : [];
   } catch(e) {
     console.warn('getVotes error', e);
-    return [];
+    return null;
   }
 }
 
 const S = {gs:null, votes:[], started:false};
 let pollTmr=null;
 let lastAnimatedStep = -1;
+
+/* ── Mémoire de session ──────────────────────────────────────────────────
+   L'écran de projection n'a ni rôle ni vote à retenir, mais il a le même
+   problème : un rechargement — ou un navigateur qui recycle l'onglet quand
+   l'ordinateur se met en veille pendant une pause — repartait sur l'écran
+   d'attente devant toute la salle, le temps d'un tic de synchronisation.
+   On repart du dernier état connu, puis la synchronisation corrige. */
+const CLE_SESSION = 'mehdi.screen.v1';
+
+function memoriser(){
+  try{ sessionStorage.setItem(CLE_SESSION, JSON.stringify({ gs:S.gs, votes:S.votes, started:S.started })); }
+  catch(e){}
+}
+function relire(){
+  try{
+    const brut = sessionStorage.getItem(CLE_SESSION);
+    if(!brut) return null;
+    const o = JSON.parse(brut);
+    return (o && o.gs) ? o : null;
+  }catch(e){ return null; }
+}
+
+/* Deux tics ratés d'affilée : on le dit. */
+let ticsRates = 0;
+const SEUIL_PERTE = 2;
+function signalerLien(perdu){
+  const b = document.getElementById('lien-perdu');
+  if(b) b.hidden = !perdu;
+}
 
 // Pre-load documents
 const DOC_CACHE = new Array(DOC_PATHS.length).fill('');
@@ -558,12 +607,25 @@ function initDoc(step){
 
 async function tick(){
   const gs = await getGS();
+  if(gs === null){
+    ticsRates++;
+    if(ticsRates >= SEUIL_PERTE) signalerLien(true);
+    return;                        // l'écran garde ce qu'il affiche
+  }
   const votes = (gs.voting || gs.results || gs.biais) ? await getVotes(gs.step) : [];
+  if(votes === null){
+    ticsRates++;
+    if(ticsRates >= SEUIL_PERTE) signalerLien(true);
+    return;
+  }
+  ticsRates = 0;
+  signalerLien(false);
   const gsChanged = JSON.stringify(gs)!==JSON.stringify(S.gs);
   const vChanged = JSON.stringify(votes)!==JSON.stringify(S.votes);
   if(gsChanged || vChanged){
     S.gs = gs;
     S.votes = votes;
+    memoriser();
     render();
   }
 }
@@ -738,7 +800,15 @@ function vBias(step){
 </div>`;
 }
 
-// Premier render synchrone, puis boot polling
+// Premier render synchrone, puis boot polling. On repart du dernier etat
+// connu de l'onglet s'il y en a un : la salle ne revoit pas l'ecran
+// d'attente pendant le premier tic.
+const repriseEcran = relire();
+if(repriseEcran){
+  S.gs = repriseEcran.gs;
+  S.votes = repriseEcran.votes || [];
+  S.started = !!repriseEcran.started;
+}
 render();
 tick();
 pollTmr = setInterval(tick, 2200);

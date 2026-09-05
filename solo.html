@@ -390,6 +390,33 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
 .rs-loading{text-align:center;padding:60px 0;color:var(--dim);font-size:.9rem}
 .rs-step-roles{display:flex;gap:16px;font-size:.74rem;color:var(--dim);padding-bottom:8px;border-bottom:1px solid var(--border-soft);margin-bottom:4px}
 .rs-comment{font-size:.84rem;line-height:1.55;color:var(--text-soft);padding:10px 14px;background:var(--bg-elev2);border-radius:8px;margin-bottom:8px;border-left:3px solid var(--border);font-style:italic}
+/* ── Révélation des six biais ────────────────────────────────────────────
+   En salle, l'animateur reprend chaque acte à la fin et nomme le biais.
+   Le mode solo s'arrêtait avant : le joueur votait six fois, lisait « lors
+   d'une session live, l'animateur reviendrait maintenant sur chaque acte »,
+   et repartait sans savoir ce qu'il venait de vivre. C'était le seul
+   endroit du jeu où le contenu pédagogique existait dans data.js sans
+   jamais être montré. */
+.bx-list{ display:flex; flex-direction:column; gap:14px; margin:22px 0 6px; }
+.bx-card{
+  border:1px solid rgba(255,255,255,.14); border-radius:14px;
+  padding:16px 18px; background:rgba(255,255,255,.03);
+}
+.bx-head{ display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
+.bx-act{ font-size:.78rem; letter-spacing:.08em; text-transform:uppercase; opacity:.65; }
+.bx-vote{
+  margin-left:auto; font-size:.78rem; letter-spacing:.04em;
+  border:1px solid rgba(255,255,255,.2); border-radius:20px; padding:2px 10px; opacity:.9;
+}
+.bx-name{ font-size:1.05rem; font-weight:700; }
+.bx-def{ font-size:.92rem; line-height:1.55; opacity:.85; margin:8px 0 0; }
+.bx-you{
+  margin-top:12px; padding-top:12px;
+  border-top:1px solid rgba(255,255,255,.12);
+  font-size:.92rem; line-height:1.55;
+}
+.bx-you-lbl{ font-size:.75rem; letter-spacing:.08em; text-transform:uppercase; opacity:.6; display:block; margin-bottom:4px; }
+.bx-other{ margin-top:10px; font-size:.9rem; line-height:1.55; opacity:.72; }
 </style>
 </head>
 <body>
@@ -422,11 +449,47 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     fbText: '',
     resultatsData: null,
     resultatsLoading: false,
+    resultatsCode: '',
+    resultatsErreur: null,
+    resultatsIndispo: false,   // les fonctions SQL ne sont pas encore posées
   };
 
+  /* ── Mémoire de session ────────────────────────────────────────────────
+     Même besoin qu'en salle : un téléphone rechargé au milieu des six actes
+     ne doit ni changer de rôle ni reperdre ses réponses. sessionStorage et
+     non localStorage — la mémoire dure le temps de l'onglet, pour qu'une
+     deuxième personne sur le même appareil retire bien un rôle au hasard. */
+  const CLE_SESSION = 'mehdi.solo.v1';
+
+  function memoriser(){
+    try{
+      sessionStorage.setItem(CLE_SESSION, JSON.stringify({
+        role:S.role, step:S.step, votes:S.votes, view:S.view,
+        fbImpression:S.fbImpression, fbClarte:S.fbClarte, fbText:S.fbText
+      }));
+    }catch(e){}
+  }
+  function oublier(){ try{ sessionStorage.removeItem(CLE_SESSION); }catch(e){} }
+  function relire(){
+    try{
+      const brut = sessionStorage.getItem(CLE_SESSION);
+      if(!brut) return null;
+      const o = JSON.parse(brut);
+      return (o && (o.role === 'c' || o.role === 'r')) ? o : null;
+    }catch(e){ return null; }
+  }
+
+  /* ── Accès aux résultats ───────────────────────────────────────────────
+     `?resultats` affichait directement toutes les réponses de tous les
+     participants — commentaires libres compris — à qui devinait le mot.
+     L'accès passe maintenant par le code animateur, vérifié PAR LA BASE
+     (fonction admin_feedback, voir SECURITE-SUPABASE.sql) : le code n'est
+     écrit nulle part dans les fichiers publiés. */
   if(window.location.search.includes('resultats')){
     S.view = 'resultats';
-    S.resultatsLoading = true;
+    S.resultatsLoading = false;
+    S.resultatsCode = '';
+    S.resultatsErreur = null;
   }
 
   // ─ Pre-load documents ─
@@ -517,7 +580,7 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
   }
 
   function onSliderInput(input){
-    const v = Math.round(parseFloat(input.value) * 10) / 10;
+    const v = Math.round(parseFloat(input.value));
     const pct = ((v - 1) / 4) * 100;
     input.style.setProperty('--pct', pct + '%');
 
@@ -526,7 +589,7 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     const display = document.getElementById('val-display');
     const status = document.getElementById('val-status');
     if(display){
-      display.textContent = v.toFixed(1);
+      display.textContent = String(v);
       display.classList.add('is-set');
     }
     if(status){ status.textContent = 'Réponse sélectionnée'; }
@@ -609,7 +672,7 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     const isLast = S.step === STEPS.length - 1;
     const hasVal = S.selected !== null && S.selected !== undefined;
     const initial = hasVal ? S.selected : 3;
-    const display = hasVal ? S.selected.toFixed(1) : '—';
+    const display = hasVal ? String(S.selected) : '—';
     const status = hasVal ? 'Réponse sélectionnée' : 'Faites glisser pour répondre';
 
     return `
@@ -640,7 +703,10 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     </div>
 
     <div class="slider-wrap">
-      <input class="slider" type="range" min="1" max="5" step="0.1" value="${initial}" data-slider aria-label="Choisissez une valeur entre 1 et 5">
+      <!-- pas de 1 : une échelle de Likert a cinq positions, un « 3,4 » ne
+           dit rien de plus qu'un « 3 » et ne tombe dans aucune barre du
+           récapitulatif. -->
+      <input class="slider" type="range" min="1" max="5" step="1" value="${initial}" data-slider aria-label="Choisissez une valeur entre 1 et 5">
     </div>
 
     <div class="slider-ticks">
@@ -683,8 +749,43 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
   <div class="db-card">
     <p>En vivant la même scène depuis des points de vue opposés, chacun développe des <strong>interprétations différentes</strong> des mêmes faits — c'est précisément ce que révèlent les biais cognitifs.</p>
   </div>
+
+  <h2 class="db-title" style="margin-top:34px">Les six biais, acte par acte</h2>
+  <div class="bx-list">${vBiaisListe()}</div>
+
   <button class="db-cta" data-action="goFeedback">Répondre au questionnaire →</button>
 </div>`;
+  }
+
+  /* Pour chaque acte : le biais, sa définition, ce qu'il a produit DE VOTRE
+     CÔTÉ (c'est le vôtre qui éclaire votre propre vote), puis de l'autre —
+     c'est la confrontation des deux qui fait la démonstration. Le vote
+     donné est rappelé à côté : sans lui, la relecture reste abstraite. */
+  function vBiaisListe(){
+    const isC = S.role === 'c';
+    return STEPS.map((step, i) => {
+      const monVote = S.votes[i];
+      const rappel = (monVote != null)
+        ? `<span class="bx-vote">Votre réponse : ${monVote} / 5</span>` : '';
+      const mien   = isC ? step.biaisC : step.biaisR;
+      const autre  = isC ? step.biaisR : step.biaisC;
+      const nomMien  = isC ? 'Mehdi' : 'Sophie';
+      const nomAutre = isC ? 'Sophie' : 'Mehdi';
+      return `
+<div class="bx-card">
+  <div class="bx-head">
+    <span class="bx-act">${step.title} · ${step.sub}</span>
+    ${rappel}
+  </div>
+  <div class="bx-name">${step.biais}</div>
+  <p class="bx-def">${step.baisDef || ''}</p>
+  <div class="bx-you">
+    <span class="bx-you-lbl">Côté ${nomMien} — votre rôle</span>
+    ${mien}
+  </div>
+  <p class="bx-other"><strong>Côté ${nomAutre} :</strong> ${autre}</p>
+</div>`;
+    }).join('');
   }
 
   function vFeedback(){
@@ -730,7 +831,7 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
   <div class="e-mark">✓</div>
   <div class="e-eyebrow">Vous avez vécu les six actes</div>
   <h1 class="e-title">Merci pour<br>votre retour.</h1>
-  <p class="e-sub">Lors d'une session live, l'animateur reviendrait maintenant sur chaque acte pour révéler le biais en jeu.</p>
+  <p class="e-sub">Vous avez vu les six biais à l'œuvre, de vos deux côtés. En salle, c'est le moment où la discussion commence.</p>
   <button class="e-restart" data-action="restart">Recommencer</button>
 </div>`;
   }
@@ -738,6 +839,22 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
   function vResultats(){
     if(S.resultatsLoading){
       return `<div class="rs-wrap"><p class="rs-loading">Chargement des résultats…</p></div>`;
+    }
+    if(S.resultatsData === null){
+      const err = S.resultatsErreur
+        ? `<p class="rs-sub" role="alert" style="margin-top:14px;color:#ffb4b4">${S.resultatsErreur}</p>` : '';
+      return `
+<div class="rs-wrap">
+  <h2 class="rs-title">Résultats</h2>
+  <p class="rs-sub" style="margin-top:12px">Réservé à l'animateur. Le code est vérifié par la base de données, il n'est écrit dans aucun fichier de ce site.</p>
+  <form id="rs-form" style="margin-top:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    <input id="rs-code" type="password" autocomplete="off" placeholder="Code animateur"
+           aria-label="Code animateur"
+           style="flex:1;min-width:200px;min-height:44px;padding:0 14px;border-radius:10px;border:1px solid rgba(255,255,255,.25);background:rgba(0,0,0,.25);color:inherit;font:inherit">
+    <button type="submit" class="e-restart" style="min-height:44px">Afficher</button>
+  </form>
+  ${err}
+</div>`;
     }
     const data = S.resultatsData || [];
     if(!data.length){
@@ -805,6 +922,7 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
   function start(){
     S.role = Math.random() < 0.5 ? 'c' : 'r';
     S.view = 'reveal';
+    memoriser();
     render();
   }
 
@@ -816,6 +934,7 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     S.fbText = '';
     resetSelection();
     S.view = 'stage';
+    memoriser();
     render();
   }
 
@@ -829,6 +948,7 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     resetSelection();
     S.view = 'welcome';
     S.confettiSpawned = false;
+    oublier();
     render();
   }
 
@@ -845,6 +965,7 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
     } else {
       S.step++;
     }
+    memoriser();
     render();
   }
 
@@ -871,17 +992,39 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
       } catch(e){ console.error('submitFeedback', e); }
     }
     S.view = 'thanks';
+    oublier();
     render();
   }
 
-  async function loadResultats(){
-    if(!sb){ S.resultatsLoading = false; render(); return; }
+  /* La fonction admin_feedback(code) compare le code à une table privée et
+     ne renvoie les lignes que s'il correspond. Tant que le SQL n'est pas
+     appliqué, elle n'existe pas : on le DIT au lieu de retomber en silence
+     sur une lecture directe, qui n'aurait protégé personne. Le reste du jeu
+     n'en dépend pas — seul cet écran d'animateur attend le SQL. */
+  async function loadResultats(code){
+    S.resultatsErreur = null;
+    if(!sb){
+      S.resultatsErreur = "Pas de connexion à la base : les résultats ne peuvent pas être chargés.";
+      render(); return;
+    }
+    S.resultatsLoading = true;
+    render();
     try {
-      const { data } = await sb.from('solo_feedback').select('*').order('created_at', { ascending: false });
-      S.resultatsData = data || [];
+      const { data, error } = await sb.rpc('admin_feedback', { code });
+      if(error){
+        const absente = /(does not exist|Could not find the function|PGRST202|42883)/i.test(
+          (error.message || '') + ' ' + (error.code || ''));
+        S.resultatsErreur = absente
+          ? "Cet accès attend les règles de sécurité Supabase : appliquez SECURITE-SUPABASE.sql dans la console, puis rechargez cette page. Le reste du jeu fonctionne sans."
+          : "Code refusé.";
+        S.resultatsData = null;
+      } else {
+        S.resultatsData = data || [];
+      }
     } catch(e){
       console.error('loadResultats', e);
-      S.resultatsData = [];
+      S.resultatsErreur = "Erreur pendant le chargement des résultats.";
+      S.resultatsData = null;
     }
     S.resultatsLoading = false;
     render();
@@ -903,9 +1046,28 @@ button{font-family:inherit;cursor:pointer;background:none;border:none;color:inhe
   document.addEventListener('input', function(e){
     if(e.target.matches('[data-slider]')) onSliderInput(e.target);
   });
+  document.addEventListener('submit', function(e){
+    if(e.target.id !== 'rs-form') return;
+    e.preventDefault();
+    const champ = document.getElementById('rs-code');
+    const code = champ ? champ.value.trim() : '';
+    if(code) loadResultats(code);
+  });
+
+  /* Reprise après rechargement : on retrouve son rôle, son acte et ses
+     réponses, sans repasser par l'écran « Vous incarnez ». */
+  const reprise = (S.view === 'resultats') ? null : relire();
+  if(reprise){
+    S.role = reprise.role;
+    S.step = reprise.step || 0;
+    S.votes = reprise.votes || [];
+    S.fbImpression = reprise.fbImpression != null ? reprise.fbImpression : null;
+    S.fbClarte = reprise.fbClarte != null ? reprise.fbClarte : null;
+    S.fbText = reprise.fbText || '';
+    S.view = (reprise.view === 'welcome' || reprise.view === 'reveal') ? 'stage' : reprise.view;
+  }
 
   render();
-  if(S.view === 'resultats' && S.resultatsLoading) loadResultats();
 })();
 </script>
 </body>
